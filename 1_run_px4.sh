@@ -19,6 +19,10 @@ param set SIM_GPS_INIT_ALT 50.0
 param set MAV_0_BROADCAST 1
 param set MAV_1_BROADCAST 1
 
+# 순항/최대 속도 설정
+param set MPC_XY_CRUISE 3
+param set MPC_XY_VEL_MAX 5
+
 # QGC 연결용 (기본 포트 14550, MAVLink v1.0 호환)
 mavlink start -x -u 14550 -r 4000000 -m config -f
 param set MAV_PROTO_VER 1

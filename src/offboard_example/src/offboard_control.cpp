@@ -102,6 +102,7 @@ private:
         } else if (offboard_setpoint_counter_ == ARM_COUNT) {
             // 4초 후: ARM (시동)
             RCLCPP_INFO(this->get_logger(), "\n[Step 2] ARM (시동) 요청...");
+            initial_yaw_ = current_yaw_;  // 이륙 시점 헤딩 기억
             arm();
 
         } else if (offboard_setpoint_counter_ == ROTATE_START) {
@@ -154,10 +155,10 @@ private:
     void publish_trajectory_setpoint()
     {
         // 목표 GPS 좌표 (대구 인근)
-        constexpr double TARGET_LAT = 35.905542;
-        constexpr double TARGET_LON = 128.802706;
-        // constexpr double TARGET_LAT = 35.905756;
-        // constexpr double TARGET_LON = 128.803066;
+        // constexpr double TARGET_LAT = 35.905542;
+        // constexpr double TARGET_LON = 128.802706;
+        constexpr double TARGET_LAT = 35.905756;
+        constexpr double TARGET_LON = 128.803066;
         constexpr double HOME_LAT = 35.905840;
         constexpr double HOME_LON = 128.802654;
 
@@ -176,11 +177,9 @@ private:
         constexpr uint64_t ROTATE_START = 100;  // 10초: 회전 시작
         constexpr uint64_t ROTATE_END = 160;    // 16초: 회전 완료
         constexpr uint64_t MOVE_START = 170;    // 17초: 이동 시작 (회전 완료 후 1초 대기)
-        constexpr uint64_t MOVE_END = 370;      // 37초: 이동 완료 (20초간 이동)
 
         // 제어 파라미터
         constexpr float MAX_YAW_RATE = 0.3f;     // 최대 회전 속도 (rad/s) ≈ 17도/초
-        constexpr float MAX_VELOCITY = 5.0f;     // 최대 이동 속도 (m/s)
 
         // 위치 및 헤딩 설정
         float enu_x, enu_y, enu_z;
@@ -189,11 +188,11 @@ private:
         float vx = NAN, vy = NAN, vz = NAN;  // 속도 제한
 
         if (offboard_setpoint_counter_ < ROTATE_START) {
-            // 1단계: 호버링 (원점, 5m)
+            // 1단계: 호버링 (원점, 5m) - 헤딩 North 고정
             enu_x = 0.0f;
             enu_y = 0.0f;
             enu_z = 5.0f;
-            yaw_setpoint = NAN;  // 헤딩 유지
+            yaw_setpoint = initial_yaw_;  // 이륙 시 헤딩 유지
             yawspeed = 0.0f;
 
         } else if (offboard_setpoint_counter_ >= ROTATE_START &&
@@ -233,28 +232,22 @@ private:
 
             yaw_setpoint = NAN;  // yawspeed 사용 시 yaw는 NAN
 
-        } else if (offboard_setpoint_counter_ >= MOVE_START) {
-            // 3단계: 점진적 이동 (속도 제한)
-            float progress = static_cast<float>(offboard_setpoint_counter_ - MOVE_START) /
-                           static_cast<float>(MOVE_END - MOVE_START);
-            progress = fmin(progress, 1.0f);  // 최대 1.0
-
-            // 현재 목표 위치 (점진적으로 증가)
-            enu_x = final_target_east * progress;
-            enu_y = final_target_north * progress;
+        } else if (offboard_setpoint_counter_ < MOVE_START) {
+            // 전환 구간 (ROTATE_END ~ MOVE_START): 호버링 유지
+            enu_x = 0.0f;
+            enu_y = 0.0f;
             enu_z = 5.0f;
-
-            // 속도 제한 (NED 좌표계)
-            float distance = sqrtf(final_target_north * final_target_north +
-                                  final_target_east * final_target_east);
-            if (distance > 0.1f && progress < 1.0f) {
-                vx = (final_target_north / distance) * MAX_VELOCITY;  // North 방향
-                vy = (final_target_east / distance) * MAX_VELOCITY;   // East 방향
-                vz = 0.0f;
-            }
-
-            yaw_setpoint = target_yaw;  // 헤딩 유지
+            yaw_setpoint = target_yaw;
             yawspeed = 0.0f;
+
+        } else if (offboard_setpoint_counter_ >= MOVE_START) {
+            // 3단계: 목표 위치로 이동 (PX4 내부 위치 컨트롤러에 위임)
+            enu_x = final_target_east;
+            enu_y = final_target_north;
+            enu_z = 5.0f;
+            yaw_setpoint = target_yaw;
+            yawspeed = 0.0f;
+            // velocity는 NAN 유지 → PX4 자체 위치 컨트롤러가 감속/접근 처리
         }
 
         // ENU → NED 변환
@@ -326,6 +319,8 @@ private:
 
     void vehicle_local_position_callback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg)
     {
+        current_x_ = msg->x;    // NED North (m)
+        current_y_ = msg->y;    // NED East (m)
         current_altitude_ = msg->z;  // NED: Z는 아래 방향이 양수
         current_yaw_ = msg->heading;  // 현재 yaw (radians)
     }
@@ -354,6 +349,8 @@ private:
     uint64_t offboard_setpoint_counter_;
     uint8_t nav_state_ = 0;
     uint8_t arming_state_ = 0;
+    float current_x_ = 0.0;        // 현재 NED North 위치 (m)
+    float current_y_ = 0.0;        // 현재 NED East 위치 (m)
     float current_altitude_ = 0.0;
     float current_yaw_ = 0.0;
     double current_lat_ = 0.0;      // 현재 위도 (degrees)
@@ -361,6 +358,7 @@ private:
     double current_alt_amsl_ = 0.0; // 현재 고도 AMSL (meters)
     bool rtl_triggered_ = false;    // RTL 모드 전환 플래그
     float prev_yaw_diff_ = 0.0f;    // 이전 yaw 오차 (PD 제어용)
+    float initial_yaw_ = 0.0f;      // 이륙 시점 헤딩 (rad)
 };
 
 int main(int argc, char * argv[])
