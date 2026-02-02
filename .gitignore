@@ -1,0 +1,23 @@
+# Build directories
+build/
+install/
+log/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ROS2 colcon
+colcon.meta
+
+# Compiled
+*.o
+*.so
+*.a
